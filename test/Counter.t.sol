@@ -137,4 +137,151 @@ contract StakingTest is Test {
         vm.expectRevert("reward duration not finished");
         staking.setRewardsDuration(1 weeks);
     }
+
+    function test_userEarnsRewardsAfterDuration() public {
+        // Bob stakes
+        deal(address(stakingToken), bob, 100 ether);
+        vm.startPrank(bob);
+        IERC20(address(stakingToken)).approve(
+            address(staking),
+            type(uint256).max
+        );
+        staking.stake(100 ether);
+        vm.stopPrank();
+
+        // Fund rewards & start reward distribution
+        deal(address(rewardToken), owner, 100 ether);
+        vm.startPrank(owner);
+        IERC20(address(rewardToken)).transfer(address(staking), 100 ether);
+        staking.setRewardsDuration(1000);
+        staking.notifyRewardAmount(100 ether);
+        vm.stopPrank();
+
+        // Fast forward in time
+        vm.warp(block.timestamp + 500);
+
+        // Bob claims rewards
+        vm.startPrank(bob);
+        uint256 before = rewardToken.balanceOf(bob);
+        staking.getReward();
+        uint256 afterBal = rewardToken.balanceOf(bob);
+        vm.stopPrank();
+
+        assertGt(afterBal, before, "Bob did not get rewards");
+        assertEq(staking.rewards(bob), 0, "Rewards not reset after claim");
+    }
+
+    function test_multipleUsersEarnRewardsFairly() public {
+        // Give tokens
+        deal(address(stakingToken), bob, 100 ether);
+        deal(address(stakingToken), dso, 100 ether);
+
+        // Both stake
+        vm.startPrank(bob);
+        IERC20(address(stakingToken)).approve(
+            address(staking),
+            type(uint256).max
+        );
+        staking.stake(100 ether);
+        vm.stopPrank();
+
+        vm.startPrank(dso);
+        IERC20(address(stakingToken)).approve(
+            address(staking),
+            type(uint256).max
+        );
+        staking.stake(100 ether);
+        vm.stopPrank();
+
+        // Owner funds rewards
+        deal(address(rewardToken), owner, 100 ether);
+        vm.startPrank(owner);
+        IERC20(address(rewardToken)).transfer(address(staking), 100 ether);
+        staking.setRewardsDuration(1000);
+        staking.notifyRewardAmount(100 ether);
+        vm.stopPrank();
+
+        // Move forward
+        vm.warp(block.timestamp + 1000);
+
+        // Both claim
+        vm.prank(bob);
+        staking.getReward();
+        vm.prank(dso);
+        staking.getReward();
+
+        uint256 bobRewards = rewardToken.balanceOf(bob);
+        uint256 dsoRewards = rewardToken.balanceOf(dso);
+
+        assertApproxEqAbs(
+            bobRewards,
+            dsoRewards,
+            1e12,
+            "Rewards not split fairly between Bob & Dso"
+        );
+    }
+    function test_lastTimeRewardApplicable() public {
+        // Initially finishAt = 0
+        assertEq(staking.lastTimeRewardApplicable(), 0);
+
+        // Setup rewards
+        vm.startPrank(owner);
+        staking.setRewardsDuration(1000);
+        deal(address(rewardToken), owner, 100 ether);
+        rewardToken.transfer(address(staking), 100 ether);
+        staking.notifyRewardAmount(100 ether);
+        vm.stopPrank();
+
+        uint256 nowTime = block.timestamp;
+        assertEq(staking.lastTimeRewardApplicable(), nowTime);
+
+        // Warp past finishAt
+        vm.warp(nowTime + 2000);
+        assertEq(staking.lastTimeRewardApplicable(), staking.finishAt());
+    }
+
+    function test_rewardPerToken_updatesCorrectly() public {
+        // Setup Bob’s stake
+        deal(address(stakingToken), bob, 100 ether);
+        vm.startPrank(bob);
+        stakingToken.approve(address(staking), type(uint256).max);
+        staking.stake(100 ether);
+        vm.stopPrank();
+
+        // Setup rewards
+        vm.startPrank(owner);
+        staking.setRewardsDuration(1000);
+        deal(address(rewardToken), owner, 100 ether);
+        rewardToken.transfer(address(staking), 100 ether);
+        staking.notifyRewardAmount(100 ether);
+        vm.stopPrank();
+
+        uint256 rptBefore = staking.rewardPerToken();
+        vm.warp(block.timestamp + 500);
+        uint256 rptAfter = staking.rewardPerToken();
+        assertGt(rptAfter, rptBefore, "Reward per token should increase");
+    }
+
+    function test_earned_functionMatchesExpected() public {
+        // Bob stakes
+        deal(address(stakingToken), bob, 100 ether);
+        vm.startPrank(bob);
+        stakingToken.approve(address(staking), type(uint256).max);
+        staking.stake(100 ether);
+        vm.stopPrank();
+
+        // Setup rewards
+        vm.startPrank(owner);
+        staking.setRewardsDuration(1000);
+        deal(address(rewardToken), owner, 100 ether);
+        rewardToken.transfer(address(staking), 100 ether);
+        staking.notifyRewardAmount(100 ether);
+        vm.stopPrank();
+
+        // Warp forward
+        vm.warp(block.timestamp + 500);
+
+        uint256 expected = staking.earned(bob);
+        assertGt(expected, 0, "Earned should be greater than 0");
+    }
 }
